@@ -3,3 +3,8 @@ dist
 .env
 .env.local
 *.tsbuildinfo
+
+# Personal financial data
+sample_transactions.csv
+*.csv
+/data/

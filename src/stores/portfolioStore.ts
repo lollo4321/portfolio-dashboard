@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Holding, Transaction } from '@/types';
+import { buildHoldingsFromTransactions } from '@/services/calculations';
 
 interface PortfolioState {
   holdings: Holding[];
@@ -8,6 +9,14 @@ interface PortfolioState {
   setHoldings: (holdings: Holding[]) => void;
   setTransactions: (transactions: Transaction[]) => void;
   addTransaction: (transaction: Transaction) => void;
+  /**
+   * Merges new transactions into the store (deduplicating by date+ticker+quantity),
+   * then rebuilds holdings using the Weighted Average Cost Basis algorithm.
+   * Returns a summary of what happened.
+   */
+  importTransactions: (
+    newTxs: Transaction[],
+  ) => { imported: number; skipped: number };
 }
 
 // Mock data seeded for the MVP. Will be replaced by CSV import in a later session.
@@ -64,13 +73,39 @@ const MOCK_HOLDINGS: Holding[] = [
 export const usePortfolioStore = create<PortfolioState>()(
   // persist saves to localStorage so holdings survive a page refresh
   persist(
-    (set) => ({
+    (set, get) => ({
       holdings: MOCK_HOLDINGS,
       transactions: [],
+
       setHoldings: (holdings) => set({ holdings }),
       setTransactions: (transactions) => set({ transactions }),
       addTransaction: (transaction) =>
         set((state) => ({ transactions: [...state.transactions, transaction] })),
+
+      importTransactions: (newTxs) => {
+        const state = get();
+
+        // Deduplication key: date + ticker + quantity.
+        // This catches the same trade imported twice from the same file.
+        const existingKeys = new Set(
+          state.transactions.map((t) => `${t.date}|${t.ticker}|${t.quantity}`),
+        );
+
+        const unique = newTxs.filter(
+          (t) => !existingKeys.has(`${t.date}|${t.ticker}|${t.quantity}`),
+        );
+        const skipped = newTxs.length - unique.length;
+
+        const merged = [...state.transactions, ...unique];
+
+        // Rebuild holdings from scratch using all transactions (including the new ones).
+        // This ensures avgCostBasis is always the correct weighted average.
+        const rebuilt = buildHoldingsFromTransactions(merged);
+
+        set({ transactions: merged, holdings: rebuilt });
+
+        return { imported: unique.length, skipped };
+      },
     }),
     { name: 'portfolio-storage' },
   ),
